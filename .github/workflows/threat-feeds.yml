@@ -1,0 +1,69 @@
+# Compilation quotidienne des listes de menaces et publication sur GitHub Pages (0 €).
+# Prérequis : dépôt PUBLIC dédié aux listes (GitHub Pages est gratuit pour les dépôts publics),
+# et Settings → Pages → Source : « GitHub Actions ».
+# L'application les télécharge si elle est compilée avec
+#   --dart-define=SAFEBANK_FEEDS_URL=https://<compte>.github.io/<depot>/feeds
+name: threat-feeds
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   # tous les jours à 03:17 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]      # premier lancement automatique dès le push du dépôt
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: threat-feeds
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compiler les listes
+        run: python3 infra/feeds/build_feeds.py public/feeds
+      - name: Page d'index minimale
+        run: |
+          cat > public/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8"><title>Safe Bank AI — listes de menaces</title>
+          <h1>Listes de menaces compilées</h1>
+          <p>Fichiers : <a href="feeds/manifest.json">manifest.json</a> (date, sources, volumes).</p>
+          HTML
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Requête quotidienne pour éviter la mise en pause du projet Supabase gratuit (inactivité).
+  # Ne fait rien tant que les secrets ne sont pas définis.
+  supabase-keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "Secrets Supabase absents : étape ignorée."; exit 0
+          fi
+          curl -fsS "$SUPABASE_URL/rest/v1/heartbeat?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" > /dev/null
+          echo "Supabase joint."
